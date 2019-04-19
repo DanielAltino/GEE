@@ -1,0 +1,188 @@
+Map.setCenter( -45.512222, -21.370278, 12);
+// Load a Fusion Table from the ID using the FeatureCollection constructor.
+var roi = ee.FeatureCollection('ft:1XhrhoGf-HNNrAwAKtzN6Ch8N7JKXQALdGViLlquQ');
+
+// Define the visualization parameters.
+var vizParams = {
+  bands: ['B4', 'B3', 'B2'],
+  min: 0,
+  max: 4095,
+  gamma: [0.95, 1.1, 1]
+};
+
+// filtering the image collection
+var image = ee.Image(ee.ImageCollection('COPERNICUS/S2')
+ .filterBounds(roi)    
+ .filterDate('2016-07-25', '2016-07-27')    
+ .sort('CLOUD_COVER')    
+  .mosaic()).clip(roi);
+  
+image = image.reproject('EPSG:32723', null, 10);
+
+var bandas = ['B8','B4','B3','B2'];
+
+var imgTIF = imageTIF.select('b1');
+
+var training = image.addBands(imgTIF).sample({
+  region: roi,
+  numPixels: 5000,
+  seed: 8
+}); 
+
+//Classificacao RF
+var AlgClassificacao = ee.Classifier.randomForest({
+  numberOfTrees: 100,
+  variablesPerSplit: 50,
+  minLeafPopulation: 10 
+}).train({
+  features: training,
+  classProperty:'b1',
+  inputProperties: bandas
+});
+
+var classificacao = image.select(bandas).classify(AlgClassificacao);
+
+//Classificacao CART
+var AlgClassificacaoCart = ee.Classifier.cart().train({
+  features: training,
+  classProperty:'b1',
+  inputProperties: bandas
+});
+var classificacaoCart = image.select(bandas).classify(AlgClassificacaoCart);
+
+//Classificacao Perceptron
+var AlgClassificacaoP = ee.Classifier.perceptron().train({
+  features: training,
+  classProperty:'b1',
+  inputProperties: bandas
+});
+var classificacaoP = image.select(bandas).classify(AlgClassificacaoP);
+
+//Classificacao Minima Distancia 
+var AlgClassificacaoMD = ee.Classifier.minimumDistance().train({
+  features: training,
+  classProperty:'b1',
+  inputProperties: bandas
+});
+
+var classificacaoMD = image.select(bandas).classify(AlgClassificacaoMD);
+
+//Classificacao Minima Distancia Mahalanobis
+var AlgClassificacaoMDM = ee.Classifier.minimumDistance('mahalanobis').train({
+  features: training,
+  classProperty:'b1',
+  inputProperties: bandas
+});
+
+var classificacaoMDM = image.select(bandas).classify(AlgClassificacaoMDM);
+
+print('Acuracia de Treinamento Classificadores:');
+print('Acuracia Random Forest: ', AlgClassificacao.confusionMatrix().accuracy());
+print('Acuracia Cart: ',AlgClassificacaoCart.confusionMatrix().accuracy());
+print('Acuracia Perceptron: ',AlgClassificacaoP.confusionMatrix().accuracy());
+print('Acuracia Minima Distancia Euclidean: ',AlgClassificacaoMD.confusionMatrix().accuracy());
+print('Acuracia Minima Distancia Mahalanobis:',AlgClassificacaoMDM.confusionMatrix().accuracy());
+
+
+//--------------------------- Combinação ------------------------
+
+var combinacao = ee.ImageCollection([classificacao,classificacaoCart,classificacaoP]).mode().addBands(imgTIF);
+combinacao = combinacao.reproject('EPSG:32723', null, 10);
+
+var amostraTesteVerif = combinacao.sample({
+  region: roi,
+  numPixels: 5000,
+  seed: 4
+}); 
+
+//Matriz de erro dos Classificadores
+var PontosAleatorios = image.addBands(imgTIF).sample({
+  region: roi,
+  numPixels: 5000,
+  seed: 4
+}); 
+
+var classificacaoTesteRF = PontosAleatorios.classify(AlgClassificacao);
+var classificacaoTesteCART = PontosAleatorios.classify(AlgClassificacaoCart);
+var classificacaoTesteP = PontosAleatorios.classify(AlgClassificacaoP);
+var classificacaoTesteMD = PontosAleatorios.classify(AlgClassificacaoMD);
+var classificacaoTesteMDM = PontosAleatorios.classify(AlgClassificacaoMDM);
+//Matriz de Erro Classificadores
+print('Matriz de Erro Classificadores:');
+print('Matriz Random Forest: ', classificacaoTesteRF.errorMatrix('b1','classification'));
+print('Matriz Cart: ',classificacaoTesteCART.errorMatrix('b1','classification'));
+print('Matriz Perceptron: ',classificacaoTesteP.errorMatrix('b1','classification'));
+print('Matriz Minima Distancia: ',classificacaoTesteMD.errorMatrix('b1','classification'));
+print('Matriz Minima Distancia Mahalanobis: ',classificacaoTesteMDM.errorMatrix('b1','classification'));
+
+//Acuracia
+print('Acuracia de Erro Classificadores:');
+print('Acuracia Random Forest: ', classificacaoTesteRF.errorMatrix('b1','classification').accuracy());
+print('Acuracia Cart: ',classificacaoTesteCART.errorMatrix('b1','classification').accuracy());
+print('Acuracia Perceptron: ',classificacaoTesteP.errorMatrix('b1','classification').accuracy());
+print('Acuracia Minima Distancia: ',classificacaoTesteMD.errorMatrix('b1','classification').accuracy());
+print('Acuracia Minima Distancia Mahalanobis: ',classificacaoTesteMDM.errorMatrix('b1','classification').accuracy());
+
+//Kappa
+print('Kappa de Erro Classificadores:');
+print('Kappa Random Forest: ', classificacaoTesteRF.errorMatrix('b1','classification').kappa());
+print('Kappa Cart: ',classificacaoTesteCART.errorMatrix('b1','classification').kappa());
+print('Kappa Perceptron: ',classificacaoTesteP.errorMatrix('b1','classification').kappa());
+print('Kappa Minima Distancia: ',classificacaoTesteMD.errorMatrix('b1','classification').kappa());
+print('Kappa Minima Distancia Mahalanobis: ',classificacaoTesteMDM.errorMatrix('b1','classification').kappa());
+//Acuracia da Combinação
+var matrizCombinacao = amostraTesteVerif.errorMatrix('b1','classification');
+print('Validation error matrix: ', matrizCombinacao);
+print('Validation overall accuracy: ', matrizCombinacao.accuracy());
+print('Kappa error matrix: ', matrizCombinacao.kappa());
+
+Map.addLayer(combinacao.select('classification'),{min: 0, max: 4, palette:['blue','grey','red','white','green']}, 'Classificacao');
+Map.addLayer(roi, {}, 'default display', false);
+//Map.addLayer(amostraColetada, {}, 'Amostra', false);
+Map.addLayer(image, vizParams, 'false color composite',false);
+//Map.addLayer(amostraTeste, {}, 'Amostras Teste',false);
+
+
+//Exportação Raster 
+/*Export.image.toDrive({
+  image: classificacao.clip(roi),
+  description: 'ClassificacaoTresPontas_RF',
+  region: roi,
+  scale: 10,
+  folder: 'IC'
+});
+Export.image.toDrive({
+  image: classificacaoCart.clip(roi),
+  description: 'ClassificacaoTresPontas_Cart',
+  region: roi,
+  scale: 10,
+  folder: 'IC'
+});
+Export.image.toDrive({
+  image: classificacaoP.clip(roi),
+  description: 'ClassificacaoTresPontas_Perceptron',
+  region: roi,
+  scale: 10,
+  folder: 'IC'
+});
+Export.image.toDrive({
+  image: classificacaoMD.clip(roi),
+  description: 'ClassificacaoTresPontas_MinDisEuc',
+  region: roi,
+  scale: 10,
+  folder: 'IC'
+});
+Export.image.toDrive({
+  image: classificacaoMDM.clip(roi),
+  description: 'ClassificacaoTresPontas_MinDisMaha',
+  region: roi,
+  scale: 10,
+  folder: 'IC'
+});
+Export.image.toDrive({
+  image: combinacao.clip(roi),
+  description: 'ClassificacaoTresPontas_Combinacao',
+  region: roi,
+  scale: 10,
+  folder: 'IC'
+});*/
